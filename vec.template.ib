@@ -4,7 +4,11 @@ struct $TVec {
     count: int,
 }
 
-fn ${t_vec}_push(vec: *$TVec, item: $TItem) {
+fn ${ TVec | snake_case }_push(vec: *$TVec, item: $TItem) {
 	// TODO: Implement
 }
 
+
+fn ${ TVec | redact }_push(vec: *$TVec, item: $TItem) {
+	// TODO: Implement
+}

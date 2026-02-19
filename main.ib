@@ -3,11 +3,17 @@ const fs = import "./fs.ib"
 const std = import "@stdlib"
 
 
-fn generate_vec(file: *fs::File, type: str, snake_type: str, items: str) {
+fn transform_redact(value: str, outstream: *any) {
+	for let i = 0; value[i] != '\0'; i+= 1 {
+		std::putc('#', outstream);
+	}
+}
+
+fn generate_vec(file: *fs::File, type: str, items: str) {
 	let m = macro::new();
+	macro::add_transformer(&m, "redact", transform_redact);
 	macro::add(&m, "TItem", items);
 	macro::add(&m, "TVec", type);
-	macro::add(&m, "t_vec", snake_type);
 	macro::execute(&m, file.content, file.length, std::stdout);
 	macro::free(&m);
 }
@@ -17,9 +23,10 @@ fn generate_vecs() {
 	let file = fs::read_file("./vec.template.ib");
 	if !file.success { return; }
 
-	generate_vec(&file, "Numbers", "numbers", "u64");
-	generate_vec(&file, "Floats", "floats", "f64");
-	generate_vec(&file, "Strings", "strings", "str");
+	generate_vec(&file, "Numbers", "u64");
+	generate_vec(&file, "Floats", "f64");
+	generate_vec(&file, "Strings", "str");
+	generate_vec(&file, "MyStrangeStructs", "MyStrangeStruct");
 
 	fs::free(&file);
 }

@@ -1,27 +1,33 @@
 const std = import "@stdlib"
 
 const DEFAULT_VAR_CAPACITY = 64;
+const DEFAULT_TRANSFORMER_CAPACITY = 64;
 
 
 pub struct MacroConfig {
 	vars: *MacroVar,
-	vars_count: int,
-	vars_capacity: int,
+	var_count: int,
+	var_capacity: int,
+
+	transformers: *MacroTransformer,
+	transformer_count: int,
+	transformer_capacity: int,
 }
 
 
 pub fn new(): MacroConfig {
-	let vars = std::malloc(sizeof(MacroVar) * DEFAULT_VAR_CAPACITY);
-	return MacroConfig {
-		vars,
-		vars_count: 0,
-		vars_capacity: DEFAULT_VAR_CAPACITY,
-	};
+	let config = MacroConfig {};
+	add_transformer(&config, "lower", transform_lower);
+	add_transformer(&config, "UPPER", transform_upper);
+	add_transformer(&config, "snake_case", transform_snake_case);
+	add_transformer(&config, "PascalCase", transform_pascal_case);
+	add_transformer(&config, "camelCase", transform_camel_case);
+	return config;
 }
 
 
 pub fn free(config: *MacroConfig) {
-	for let i = 0; i < config.vars_count; i+=1 {
+	for let i = 0; i < config.var_count; i+=1 {
 		free_var(&config.vars[i]);
 	}
 	std::free(config.vars);
@@ -29,16 +35,29 @@ pub fn free(config: *MacroConfig) {
 
 
 pub fn add(config: *MacroConfig, name: str, value: str) {
-	if config.vars_count >= config.vars_capacity {
-		let new_capacity = config.vars_capacity * 2;
-		if config.vars_capacity == 0 { new_capacity = DEFAULT_VAR_CAPACITY; }
+	if config.var_count >= config.var_capacity {
+		let new_capacity = config.var_capacity * 2;
+		if config.var_capacity == 0 { new_capacity = DEFAULT_VAR_CAPACITY; }
 		config.vars = std::realloc(config.vars, sizeof(MacroVar) * new_capacity);
-		config.vars_capacity = new_capacity;
+		config.var_capacity = new_capacity;
 	}
-	config.vars[config.vars_count].name = str_clone(name);
-	config.vars[config.vars_count].name_len = std::strlen(name);
-	config.vars[config.vars_count].value = str_clone(value);
-	config.vars_count += 1;
+	config.vars[config.var_count].name = str_clone(name);
+	config.vars[config.var_count].name_len = std::strlen(name);
+	config.vars[config.var_count].value = str_clone(value);
+	config.var_count += 1;
+}
+
+pub fn add_transformer(config: *MacroConfig, name: str, transformer: fn(str, *any): void) {
+	if config.transformer_count >= config.transformer_capacity {
+		let new_capacity = config.transformer_capacity * 2;
+		if config.transformer_capacity == 0 { new_capacity = DEFAULT_TRANSFORMER_CAPACITY; }
+		config.transformers = std::realloc(config.transformers, sizeof(MacroTransformer) * new_capacity);
+		config.transformer_capacity = new_capacity;
+	}
+	config.transformers[config.transformer_count].name = str_clone(name);
+	config.transformers[config.transformer_count].name_len = std::strlen(name);
+	config.transformers[config.transformer_count].transformer = transformer;
+	config.transformer_count += 1;
 }
 
 
@@ -46,6 +65,12 @@ struct MacroVar {
 	name_len: int,
 	name: str,
 	value: str,
+}
+
+struct MacroTransformer {
+	name_len: int,
+	name: str,
+	transformer: fn(str, *any): void,
 }
 
 
@@ -57,6 +82,7 @@ struct Eval {
 	len: int,
 	errored: bool,
 }
+
 
 pub fn execute(config: *MacroConfig, source: str, source_len: int, output_stream: *any) {
 	let eval = Eval {
@@ -111,16 +137,66 @@ fn macro_simple(eval: *Eval) {
 	std::fputs(v.value, eval.out);
 }
 
-
-fn macro_full(eval: *Eval) {
-	let v = find_key(eval);
-	if v == null { error(eval, "Macro key not found!"); return; }
-	// TODO: Add support for transformers
-	if !consume(eval, '}') { error(eval, "Missing '}'"); return; }
-
-	std::fputs(v.value, eval.out);
+fn is_whitespace(c: char): bool {
+	return c == ' ' || c == '\t';
 }
 
+fn consume_whitespace(eval: *Eval) {
+	while is_whitespace(curr(eval)) { step(eval); }
+}
+
+
+fn macro_full(eval: *Eval) {
+	consume_whitespace(eval);
+	let v = find_key(eval);
+	if v == null { error(eval, "Macro key not found!"); return; }
+	consume_whitespace(eval);
+	// NOTE: Simple macro
+	if consume(eval, '}') {
+		std::fputs(v.value, eval.out);
+		return;
+	}
+	if !consume(eval, '|') {
+		error(eval, "Missing '}' or '|'");
+		return;
+	}
+	consume_whitespace(eval);
+	// TODO: Add support for transformers
+	let start = eval.offset;
+	let len = read_ident(eval);
+	let found = false;
+	for let i = 0; i < eval.config.transformer_count; i+=1 {
+		let transformer = &eval.config.transformers[i];
+		if transformer.name_len != len { continue; }
+		if std::memcmp(transformer.name, &eval.source[start], len) != 0 {
+			continue;
+		}
+		let transformer_fn = transformer.transformer;
+		transformer_fn(v.value, eval.out);
+		found = true;
+		break;
+	}
+	if !found {
+		error(eval, "Undefined transformer key");
+		return;
+	}
+	consume_whitespace(eval);
+	if !consume(eval, '}') {
+		error(eval, "Missing '}'");
+		return;
+	}
+}
+
+
+
+fn read_ident(eval: *Eval): int {
+	let len = 0;
+	while is_ident(curr(eval)) {
+		step(eval);
+		len += 1;
+	}
+	return len;
+}
 
 fn error(eval: *Eval, message: str) {
 	std::printf(message);
@@ -131,13 +207,9 @@ fn error(eval: *Eval, message: str) {
 
 fn find_key(eval: *Eval): *MacroVar {
 	let start = eval.offset;
-	let len = 0;
-	while is_ident(curr(eval)) {
-		step(eval);
-		len += 1;
-	}
+	let len = read_ident(eval);
 
-	for let i = 0; i < eval.config.vars_count; i+=1 {
+	for let i = 0; i < eval.config.var_count; i+=1 {
 		let var = &eval.config.vars[i];
 		if var.name_len != len { continue; }
 		if std::memcmp(var.name, &eval.source[start], len) != 0 { continue; }
@@ -186,3 +258,88 @@ fn consume(eval: *Eval, c: char): bool {
 		return false;
 	}
 }
+
+fn is_upper(c: char): char {
+	return c >= 'A' && c <= 'Z';
+}
+fn to_lower(c: char): char {
+	if c >= 'A' && c <= 'Z' { return (c - 'A') + 'a'; }
+	return c;
+}
+
+fn to_upper(c: char): char {
+	if c >= 'a' && c <= 'z' { return (c - 'a') + 'A'; }
+	return c;
+}
+
+// NOTE: BUILT IN TRANSFORMERS
+
+fn transform_lower(value: str, outstream: *any) {
+	for let i = 0; value[i] != '\0'; i+= 1 {
+		let c = value[i];
+		std::putc(to_lower(c), outstream);
+	}
+}
+
+fn transform_upper(value: str, outstream: *any) {
+	for let i = 0; value[i] != '\0'; i+= 1 {
+		let c = value[i];
+		std::putc(to_upper(c), outstream);
+	}
+}
+
+fn transform_snake_case(value: str, outstream: *any) {
+	for let i = 0; value[i] != '\0'; i+= 1 {
+		let c = value[i];
+		if is_upper(c) {
+			if i > 0 {
+				std::putc('_', outstream);
+			}
+			std::putc(to_lower(c), outstream);
+		} else {
+			std::putc(c, outstream);
+		}
+	}
+}
+
+fn transform_pascal_case(value: str, outstream: *any) {
+	let read_underscore = false;
+	let is_first = true;
+	for let i = 0; value[i] != '\0'; i+= 1 {
+		let c = value[i];
+		if c == '_' {
+			read_underscore = true;
+		} else if is_first {
+			std::putc(to_upper(c), outstream);
+			is_first = false;
+			read_underscore = false;
+		} else if read_underscore {
+			std::putc(to_upper(c), outstream);
+			read_underscore = false;
+		} else {
+			std::putc(c, outstream);
+		}
+	}
+}
+
+
+fn transform_camel_case(value: str, outstream: *any) {
+	let read_underscore = false;
+	let is_first = true;
+	for let i = 0; value[i] != '\0'; i+= 1 {
+		let c = value[i];
+		if c == '_' {
+			read_underscore = true;
+		} else if is_first {
+			std::putc(to_lower(c), outstream);
+			is_first = false;
+			read_underscore = false;
+		} else if read_underscore {
+			std::putc(to_upper(c), outstream);
+			read_underscore = false;
+		} else {
+			std::putc(c, outstream);
+		}
+	}
+}
+

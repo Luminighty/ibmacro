@@ -1,0 +1,10 @@
+struct $TVec {
+    items: *$TItem,
+    capacity: int,
+    count: int,
+}
+
+fn ${t_vec}_push(vec: *$TVec, item: $TItem) {
+	// TODO: Implement
+}
+

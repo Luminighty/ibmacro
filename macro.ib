@@ -1,0 +1,188 @@
+const std = import "@stdlib"
+
+const DEFAULT_VAR_CAPACITY = 64;
+
+
+pub struct MacroConfig {
+	vars: *MacroVar,
+	vars_count: int,
+	vars_capacity: int,
+}
+
+
+pub fn new(): MacroConfig {
+	let vars = std::malloc(sizeof(MacroVar) * DEFAULT_VAR_CAPACITY);
+	return MacroConfig {
+		vars,
+		vars_count: 0,
+		vars_capacity: DEFAULT_VAR_CAPACITY,
+	};
+}
+
+
+pub fn free(config: *MacroConfig) {
+	for let i = 0; i < config.vars_count; i+=1 {
+		free_var(&config.vars[i]);
+	}
+	std::free(config.vars);
+}
+
+
+pub fn add(config: *MacroConfig, name: str, value: str) {
+	if config.vars_count >= config.vars_capacity {
+		let new_capacity = config.vars_capacity * 2;
+		if config.vars_capacity == 0 { new_capacity = DEFAULT_VAR_CAPACITY; }
+		config.vars = std::realloc(config.vars, sizeof(MacroVar) * new_capacity);
+		config.vars_capacity = new_capacity;
+	}
+	config.vars[config.vars_count].name = str_clone(name);
+	config.vars[config.vars_count].name_len = std::strlen(name);
+	config.vars[config.vars_count].value = str_clone(value);
+	config.vars_count += 1;
+}
+
+
+struct MacroVar {
+	name_len: int,
+	name: str,
+	value: str,
+}
+
+
+struct Eval {
+	config: *MacroConfig,
+	out: *any,
+	source: str,
+	offset: int,
+	len: int,
+	errored: bool,
+}
+
+pub fn execute(config: *MacroConfig, source: str, source_len: int, output_stream: *any) {
+	let eval = Eval {
+		config, source, out: output_stream,
+		offset: 0, len: source_len, errored: false,
+	};
+
+	while curr(&eval) != '\0' {
+		let c = curr(&eval);
+		let next = peek(&eval, 1);
+		if c == '\\' && next == '$' {
+			std::putc('$', eval.out);
+			step(&eval); step(&eval);
+			continue;
+		}
+		if c != '$' {
+			std::putc(c, eval.out);
+			step(&eval);
+			continue;
+		}
+		// NOTE: Macro detected
+		step(&eval); // $
+		if next == '{' {
+			step(&eval); // {
+			macro_full(&eval);
+		} else {
+			macro_simple(&eval);
+		}
+	}
+}
+
+
+fn free_var(var: *MacroVar) {
+	std::free(var.name);
+	std::free(var.value);
+}
+
+
+fn str_clone(s: str): str {
+	let len = std::strlen(s);
+	let new_str: str = std::malloc(sizeof(char) * (len + 1));
+	std::memcpy(new_str, s, len);
+	new_str[len] = '\0';
+	return new_str;
+}
+
+
+
+fn macro_simple(eval: *Eval) {
+	let v = find_key(eval);
+	if v == null { error(eval, "Macro key not found!"); return; }
+	std::fputs(v.value, eval.out);
+}
+
+
+fn macro_full(eval: *Eval) {
+	let v = find_key(eval);
+	if v == null { error(eval, "Macro key not found!"); return; }
+	// TODO: Add support for transformers
+	if !consume(eval, '}') { error(eval, "Missing '}'"); return; }
+
+	std::fputs(v.value, eval.out);
+}
+
+
+fn error(eval: *Eval, message: str) {
+	std::printf(message);
+	std::printf("\n");
+	eval.errored = true;
+}
+
+
+fn find_key(eval: *Eval): *MacroVar {
+	let start = eval.offset;
+	let len = 0;
+	while is_ident(curr(eval)) {
+		step(eval);
+		len += 1;
+	}
+
+	for let i = 0; i < eval.config.vars_count; i+=1 {
+		let var = &eval.config.vars[i];
+		if var.name_len != len { continue; }
+		if std::memcmp(var.name, &eval.source[start], len) != 0 { continue; }
+		return var;
+	}
+
+	eval.offset = start;
+	return null;
+}
+
+
+fn curr(eval: *Eval): char {
+	if eval.offset >= eval.len { return '\0'; }
+	return eval.source[eval.offset];
+}
+
+
+fn peek(eval: *Eval, offset: int): char {
+	if eval.offset + offset >= eval.len { return '\0'; }
+	return eval.source[eval.offset + offset];
+}
+
+
+fn step(eval: *Eval) { eval.offset += 1; }
+
+
+fn is_macro_key(eval: *Eval): bool {
+	return curr(eval) == '$';
+}
+
+
+fn is_ident(c: char): bool {
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_';
+}
+
+
+fn consume(eval: *Eval, c: char): bool {
+	let next = curr(eval);
+	if next == c {
+		step(eval);
+		return true;
+	} else {
+		return false;
+	}
+}

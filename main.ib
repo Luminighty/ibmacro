@@ -1,0 +1,32 @@
+const macro = import "./macro.ib"
+const fs = import "./fs.ib"
+const std = import "@stdlib"
+
+
+fn generate_vec(file: *fs::File, type: str, snake_type: str, items: str) {
+	let m = macro::new();
+	macro::add(&m, "TItem", items);
+	macro::add(&m, "TVec", type);
+	macro::add(&m, "t_vec", snake_type);
+	macro::execute(&m, file.content, file.length, std::stdout);
+	macro::free(&m);
+}
+
+
+fn generate_vecs() {
+	let file = fs::read_file("./vec.template.ib");
+	if !file.success { return; }
+
+	generate_vec(&file, "Numbers", "numbers", "u64");
+	generate_vec(&file, "Floats", "floats", "f64");
+	generate_vec(&file, "Strings", "strings", "str");
+
+	fs::free(&file);
+}
+
+
+pub fn main(): int {
+	generate_vecs();
+	return 0;
+}
+
